@@ -149,7 +149,6 @@ html, body { margin: 0; height: 100%; }
   color: #fff;
   font-weight: 700;
 }
-.zone.border { background: none; border: 1px dashed var(--zone-hit-dark); padding: 0 6px; color: var(--zone-hit-dark); cursor: help; }
 .zone.more { border: 0; font: inherit; font-weight: 700; background: #dceeec; color: var(--zone-hit-dark); cursor: pointer; }
 .zone.more:hover { background: #c4e4e0; }
 .zone-seq { display: contents; }

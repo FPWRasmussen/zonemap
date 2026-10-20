@@ -5,7 +5,7 @@ so you know when a commuter card needs a zone extension.
 
 Live at **https://fpwrasmussen.github.io/zonemap/**.
 
-Enter a start and destination; the app lists up to ~6 routes, each with the zones it crosses.
+Enter a start and destination; the app lists up to 6 routes, each with the zones a commuter card for that route must cover.
 The selected route is drawn on the map and its zones are highlighted.
 Click a zone to highlight it; click it again, or anywhere outside the zones, to clear it.
 
@@ -16,12 +16,12 @@ It's a static site with no build step and no backend.
 | Piece | Source |
 |---|---|
 | Zone polygons | `data/zones.geojson` |
-| Place search + routing | [Transitous](https://transitous.org) (free, no API key) |
+| Place search, routing, zones per route | Rejseplanen's journey planner (`rejseplanen.dk/bin/iphone.exe`, the endpoint the rejseplanen.dk web app uses) |
 | Map | [Leaflet](https://leafletjs.com) + OpenStreetMap tiles |
 
-Each transit leg's geometry is resampled every 30 m and checked against the zone polygons. Walking is ignored.
-If a route spends less than 200 m in a zone, that zone is listed separately under **border** and isn't counted.
-This is usually a border station, e.g. Hellerup St. is in both zone 2 and zone 30.
+Routes come from `TripSearch`. Each route's zones then come from a `Reconstruction` request with a tariff request:
+the commuter card fare (`SP`) lists the zones it is valid in (`vz`).
+So border stations such as Hellerup (zone 2/30) are handled the same way as when you buy the ticket.
 
 ## Run locally
 
@@ -38,7 +38,5 @@ Any static host works the same way, e.g. Render as a "Static Site" with an empty
 
 ## Limitations
 
-- The zone list comes from route geometry, not from a fare calculator.
-  The app doesn't apply ticket rules such as zone counting or the "via" rules.
 - Departures are always for "now".
-- Transitous is a community service: please keep usage personal-scale.
+- The Rejseplanen endpoint is the web app's internal API, not the official keyed API 2.0, so it can change without notice.

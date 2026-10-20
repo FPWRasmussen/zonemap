@@ -1,26 +1,12 @@
 'use strict';
 
-const API = 'https://api.transitous.org/api';
 const COPENHAGEN = [55.6761, 12.5683];
-const SAMPLE_STEP_M = 30; // route geometry is resampled at this spacing before zone lookup
-const BORDER_M = 200; // less travel than this inside a zone = only touched (border station / edge graze)
 const LABEL_MIN_ZOOM = 10;
+const NUM_TRIPS = 6;
 
 const ZONE_STYLE = { color: '#1f2a33', weight: 1.6, opacity: 0.75, fillColor: '#1f2a33', fillOpacity: 0.04 };
 const ZONE_HIT_STYLE = { color: '#0f5f59', weight: 2.5, opacity: 0.95, fillColor: '#14b8a6', fillOpacity: 0.22 };
 const ZONE_PICK_STYLE = { color: '#0f5f59', weight: 4, opacity: 1, fillColor: '#14b8a6', fillOpacity: 0.4 };
-
-// The routing feed has no route colours; use the official Copenhagen ones.
-const LINE_COLORS = {
-  SUBURBAN: { A: '#0094d9', B: '#4cb848', BX: '#8fc73e', C: '#f39200', E: '#7671b3', F: '#ffc20e', H: '#e2001a' },
-  SUBWAY: { M1: '#00814a', M2: '#ffc600', M3: '#e5011c', M4: '#0098d4' },
-};
-const MODE_COLORS = {
-  BUS: '#e8a200', COACH: '#e8a200', TRAM: '#5b6770', FERRY: '#1f6fb2', SUBWAY: '#00814a', SUBURBAN: '#b41730',
-};
-const DARK_TEXT = new Set(['#ffc20e', '#ffc600', '#e8a200', '#8fc73e']);
-
-const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
 
 // ---------- map ----------
 
@@ -29,8 +15,7 @@ L.control.zoom({ position: 'bottomright' }).addTo(map);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   opacity: 0.7, // faded over the light container background; much cheaper than a CSS filter while panning
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    + ' · Routing <a href="https://transitous.org">Transitous</a>',
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
 }).addTo(map);
 
 const routeLayer = L.layerGroup().addTo(map);
@@ -38,7 +23,7 @@ const endpointLayer = L.layerGroup().addTo(map);
 
 // ---------- zones ----------
 
-/** @type {{id:string, short:string, name:string, ring:number[][], bbox:number[], layer:L.Polygon, label:L.Marker}[]} */
+/** @type {{id:string, short:string, name:string, bounds:L.LatLngBounds, layer:L.Polygon, label:L.Marker}[]} */
 const zones = [];
 const zoneById = new Map();
 // Own pane below the default overlay pane, so zones stay under routes no matter when they're (re)mounted.
@@ -59,17 +44,9 @@ const zonesReady = fetch('data/zones.geojson')
       style: ZONE_STYLE,
       onEachFeature(feature, layer) {
         const p = feature.properties;
-        const ring = feature.geometry.coordinates[0];
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const [x, y] of ring) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
         const zone = {
-          id: p.id, short: p.short, name: p.name, ring, bbox: [minX, minY, maxX, maxY], layer,
-          bounds: L.latLngBounds([minY, minX], [maxY, maxX]),
+          id: p.id, short: p.short, name: p.name, layer,
+          bounds: layer.getBounds(),
           label: L.marker(p.center, { icon: labelIcon(p.short, false), interactive: false, keyboard: false }),
         };
         zones.push(zone);
@@ -110,7 +87,7 @@ function toggle(group, layer, want) {
 
 function highlightZones(ids) {
   const before = highlighted;
-  highlighted = new Set(ids);
+  highlighted = new Set(ids.filter((id) => zoneById.has(id)));
   for (const id of new Set([...before, ...highlighted])) restyleZone(id);
 }
 
@@ -131,80 +108,187 @@ function restyleZone(id) {
   z.label.setIcon(labelIcon(z.short, isPicked || onRoute));
 }
 
-function insideRing(lon, lat, ring) {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-    if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+// ---------- Rejseplanen (HAFAS mgate, the same endpoint and client id as the rejseplanen.dk web app) ----------
+
+const RP_URL = 'https://rejseplanen.dk/bin/iphone.exe';
+const RP_BASE = {
+  ver: '1.24',
+  lang: 'dan',
+  auth: { type: 'AID', aid: 'j1sa92pcj72ksh0-web' },
+  client: { id: 'DK', type: 'WEB', name: 'rejseplanwebapp', l: 'vs_webapp', v: '1.0.5' },
+  formatted: false,
+  ext: 'DK.11',
+};
+const RP_NO_TRIPS = new Set(['H890', 'H891', 'H892', 'H895', 'H899', 'H9220', 'H9240', 'H9360', 'H9380']);
+let rpRequestSeq = 0;
+
+async function rp(meth, req) {
+  const r = await fetch(RP_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...RP_BASE, id: `zonemap${++rpRequestSeq}`, svcReqL: [{ meth, id: '1|1|', req }] }),
+  });
+  if (!r.ok) throw new Error(`Rejseplanen: HTTP ${r.status}`);
+  const data = await r.json();
+  const svc = data.svcResL?.[0];
+  if (data.err !== 'OK' || svc?.err !== 'OK') {
+    const code = svc?.err ?? data.err;
+    throw Object.assign(new Error(`Rejseplanen ${meth} failed: ${svc?.errTxt || code}`), { code });
   }
-  return inside;
+  return svc.res;
 }
 
-function zoneContains(z, lat, lon) {
-  const [minX, minY, maxX, maxY] = z.bbox;
-  return lon >= minX && lon <= maxX && lat >= minY && lat <= maxY && insideRing(lon, lat, z.ring);
+async function searchPlaces(text) {
+  const res = await rp('LocMatch', {
+    input: { field: 'S', loc: { name: `${text}?`, type: 'ALL', dist: 1000 }, maxLoc: 7 },
+  });
+  return (res.match?.locL ?? [])
+    .filter((l) => l.crd)
+    .map((l) => ({ name: l.name, type: l.type, lid: l.lid, lat: l.crd.y / 1e6, lon: l.crd.x / 1e6 }));
 }
 
-function zoneAt(lat, lon, hint) {
-  if (hint && zoneContains(hint, lat, lon)) return hint;
-  for (const z of zones) if (zoneContains(z, lat, lon)) return z;
-  return null;
+/** Current date/time in Copenhagen as HAFAS wants it ("YYYYMMDD", "HHMMSS"), whatever the device timezone. */
+function copenhagenNow() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Copenhagen', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date()).map((p) => [p.type, p.value]));
+  return { date: `${parts.year}${parts.month}${parts.day}`, time: `${parts.hour}${parts.minute}${parts.second}` };
+}
+
+async function searchTrips(from, to) {
+  const now = copenhagenNow();
+  let res;
+  try {
+    res = await rp('TripSearch', {
+      depLocL: [{ lid: from.lid, type: from.type, name: from.name }],
+      arrLocL: [{ lid: to.lid, type: to.type, name: to.name }],
+      outFrwd: true,
+      outDate: now.date,
+      outTime: now.time,
+      jnyFltrL: [
+        { type: 'GROUP', mode: 'INC', value: 'RQ_WALK_OEV' },
+        { type: 'PROD', mode: 'INC', value: 4095 },
+      ],
+      getPolyline: true,
+      getPasslist: false,
+      numF: NUM_TRIPS,
+    });
+  } catch (err) {
+    if (RP_NO_TRIPS.has(err.code)) return [];
+    throw err;
+  }
+  return (res.outConL ?? []).map((con) => parseTrip(con, res.common));
 }
 
 /**
- * Zones crossed by a polyline ([lat, lon][]), in travel order, mapped to metres travelled inside each.
- * A zone with (near) zero metres is only touched at a stop, e.g. a border station such as Hellerup (2/30).
+ * Zones the commuter card (pendlerkort) for this exact trip must cover, from Rejseplanen's fare engine.
+ * TripSearch never includes fares, so each trip is reconstructed with a tariff request.
  */
-function zonesAlong(coords) {
-  const metres = new Map();
-  let current = null;
-  const visit = (lat, lon, m) => {
-    current = zoneAt(lat, lon, current);
-    if (current) metres.set(current.id, (metres.get(current.id) ?? 0) + m);
-  };
-  for (let i = 1; i < coords.length; i++) {
-    const [lat1, lon1] = coords[i - 1];
-    const [lat2, lon2] = coords[i];
-    const d = distanceM(lat1, lon1, lat2, lon2);
-    const steps = Math.max(1, Math.ceil(d / SAMPLE_STEP_M));
-    for (let k = 0; k < steps; k++) {
-      const t = k / steps;
-      visit(lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t, d / steps);
+async function fetchTripZones(ctxRecon) {
+  const res = await rp('Reconstruction', {
+    outReconL: [{ ctx: ctxRecon }],
+    getPasslist: false,
+    getPolyline: false,
+    getTariff: true,
+    trfReq: { tvlrProfData: '{}' },
+  });
+  let fallback = null;
+  for (const fareSet of res.outConL?.[0]?.trfRes?.fareSetL ?? []) {
+    for (const fare of fareSet.fareL ?? []) {
+      let info;
+      try { info = JSON.parse(fare.addData ?? '{}'); } catch { continue; }
+      if (!Array.isArray(info.vz)) continue;
+      const zoneIds = info.vz.map(String);
+      if (info.trf === 'SP' && info.zn) return zoneIds; // SP = season pass, i.e. the commuter card
+      fallback ??= zoneIds;
     }
   }
-  if (coords.length) visit(...coords[coords.length - 1], 0);
-  return metres;
+  return fallback ?? [];
 }
 
-function distanceM(lat1, lon1, lat2, lon2) {
-  const kx = 111320 * Math.cos(((lat1 + lat2) / 2) * (Math.PI / 180));
-  return Math.hypot((lat2 - lat1) * 110540, (lon2 - lon1) * kx);
+function parseTrip(con, common) {
+  const locs = common.locL ?? [];
+  const prods = common.prodL ?? [];
+  const polys = common.polyL ?? [];
+  const icons = common.icoL ?? [];
+  const point = (locX) => {
+    const l = locs[locX];
+    return { name: l.name, lat: l.crd.y / 1e6, lon: l.crd.x / 1e6 };
+  };
+  const legs = (con.secL ?? []).filter((sec) => sec.dep && sec.arr).map((sec) => {
+    const from = point(sec.dep.locX);
+    const to = point(sec.arr.locX);
+    const transit = Boolean(sec.jny);
+    const polyXL = transit ? sec.jny.polyG?.polyXL : sec.gis?.polyG?.polyXL;
+    const coords = (polyXL ?? []).flatMap((i) => (polys[i]?.crdEncYX ? decodePolyline(polys[i].crdEncYX) : []));
+    return {
+      transit,
+      from,
+      to,
+      dep: sec.dep.dTimeS, // scheduled; real-time values exist only for some stops, and mixing them misleads
+      arr: sec.arr.aTimeS,
+      line: transit ? lineInfo(prods[sec.jny.prodX], icons) : null,
+      coords: coords.length ? coords : [[from.lat, from.lon], [to.lat, to.lon]],
+    };
+  });
+  return {
+    ctxRecon: con.ctxRecon,
+    dep: con.dep.dTimeS,
+    arr: con.arr.aTimeS,
+    minutes: hafasMinutes(con.dur),
+    changes: con.chg ?? 0,
+    legs,
+    zones: null, // null = loading, [] = unavailable
+  };
+}
+
+/** Badge text and colours. Numbered trains ("IC 70866", "Re 52538") show their category; lines show the line. */
+function lineInfo(prod, icons) {
+  if (!prod) return { label: '?', title: '', bg: '#555', fg: '#fff' };
+  const short = prod.nameS || prod.name;
+  const category = prod.prodCtx?.catOutL?.trim();
+  const label = /^\d{3,}$/.test(short) && category ? category : short;
+  const ico = icons[prod.icoX] ?? {};
+  const rgb = (c, dflt) => (c ? `rgb(${c.r},${c.g},${c.b})` : dflt);
+  return { label, title: prod.name, bg: rgb(ico.bg, '#555'), fg: rgb(ico.fg, '#fff') };
+}
+
+/** HAFAS polyline: Google encoding at 1e5 precision. */
+function decodePolyline(str) {
+  const out = [];
+  let i = 0, lat = 0, lon = 0;
+  while (i < str.length) {
+    for (let k = 0; k < 2; k++) {
+      let result = 0, scale = 1, b;
+      do {
+        b = str.charCodeAt(i++) - 63;
+        result += (b & 0x1f) * scale;
+        scale *= 32;
+      } while (b >= 0x20);
+      const delta = result % 2 ? -(result + 1) / 2 : result / 2;
+      if (k === 0) lat += delta; else lon += delta;
+    }
+    out.push([lat / 1e5, lon / 1e5]);
+  }
+  return out;
+}
+
+/** "HHMMSS", or "DDHHMMSS" with a day offset, already in Danish local time → "HH:MM" (+N for later days). */
+function hafasClock(t) {
+  const days = t.length > 6 ? Number(t.slice(0, -6)) : 0;
+  const hhmm = `${t.slice(-6, -4)}:${t.slice(-4, -2)}`;
+  return days ? `${hhmm} (+${days})` : hhmm;
+}
+
+function hafasMinutes(d) {
+  const days = d.length > 6 ? Number(d.slice(0, -6)) : 0;
+  return days * 1440 + Number(d.slice(-6, -4)) * 60 + Number(d.slice(-4, -2));
 }
 
 // ---------- search fields ----------
 
-async function geocode(text) {
-  const params = new URLSearchParams({
-    text, language: 'da', place: COPENHAGEN.join(','), placeBias: '3',
-  });
-  const r = await fetch(`${API}/v1/geocode?${params}`);
-  if (!r.ok) throw new Error(`Place search failed (HTTP ${r.status})`);
-  const results = await r.json();
-  return results
-    .filter((x) => x.country === 'DK' || x.country === 'SE')
-    .slice(0, 6)
-    .map((x) => ({
-      name: x.name,
-      lat: x.lat,
-      lon: x.lon,
-      id: x.id,
-      type: x.type,
-      area: (x.areas || []).find((a) => a.default)?.name ?? '',
-    }));
-}
-
-const TYPE_LABEL = { STOP: 'Stop', ADDRESS: 'Address', PLACE: 'Place' };
+const TYPE_LABEL = { S: 'Stop', A: 'Address', P: 'Place' };
 
 function setupField(input, color) {
   const list = input.parentElement.querySelector('.suggest');
@@ -219,7 +303,7 @@ function setupField(input, color) {
     items = next;
     active = -1;
     list.replaceChildren(...items.map((item, i) => {
-      const li = el('li', { role: 'option' }, item.name, el('small', {}, [TYPE_LABEL[item.type] ?? item.type, item.area].filter(Boolean).join(' · ')));
+      const li = el('li', { role: 'option' }, item.name, el('small', {}, TYPE_LABEL[item.type] ?? ''));
       li.addEventListener('mousedown', (e) => {
         e.preventDefault(); // keep focus so blur doesn't close the list first
         choose(items[i]);
@@ -262,7 +346,7 @@ function setupField(input, color) {
     timer = setTimeout(async () => {
       const mine = ++seq;
       try {
-        const found = await geocode(q);
+        const found = await searchPlaces(q);
         if (mine === seq) render(found);
       } catch (err) {
         if (mine === seq) showStatus(err.message, true);
@@ -282,12 +366,12 @@ function setupField(input, color) {
   return {
     get place() { return place; },
     set,
-    /** The chosen place, or the best geocoder match for the typed text. */
+    /** The chosen place, or the best match for the typed text. */
     async resolve(what) {
       if (place) return place;
       const q = input.value.trim();
       if (!q) throw new Error(`Enter a ${what}.`);
-      const [best] = await geocode(q);
+      const [best] = await searchPlaces(q);
       if (!best) throw new Error(`No place found for “${q}”.`);
       choose(best);
       return best;
@@ -309,85 +393,26 @@ document.getElementById('swap').addEventListener('click', () => {
   if (!a) document.getElementById('to').value = aText;
 });
 
-// ---------- routing ----------
+// ---------- results ----------
 
-function placeParam(p) {
-  return p.type === 'STOP' ? p.id : `${p.lat},${p.lon}`;
+let shownTrips = [];
+let selectedIndex = -1;
+let searchSeq = 0;
+
+function lineBadge(line) {
+  return el('span', { className: 'line', title: line.title, style: `background:${line.bg};color:${line.fg}` }, line.label);
 }
 
-async function planTrips(from, to) {
-  const params = new URLSearchParams({ fromPlace: placeParam(from), toPlace: placeParam(to), numItineraries: '6' });
-  const r = await fetch(`${API}/v5/plan?${params}`);
-  if (!r.ok) throw new Error(`Route search failed (HTTP ${r.status}).`);
-  return r.json();
-}
-
-function decodePolyline(str, precision) {
-  const factor = 10 ** precision;
-  const out = [];
-  let i = 0, lat = 0, lon = 0;
-  while (i < str.length) {
-    for (let k = 0; k < 2; k++) {
-      let result = 0, scale = 1, b;
-      do {
-        b = str.charCodeAt(i++) - 63;
-        result += (b & 0x1f) * scale;
-        scale *= 32;
-      } while (b >= 0x20);
-      const delta = result % 2 ? -(result + 1) / 2 : result / 2;
-      if (k === 0) lat += delta; else lon += delta;
-    }
-    out.push([lat / factor, lon / factor]);
-  }
-  return out;
-}
-
-function legCoords(leg) {
-  if (leg.legGeometry?.points) return decodePolyline(leg.legGeometry.points, leg.legGeometry.precision ?? 6);
-  return [leg.from, ...(leg.intermediateStops || []), leg.to].map((s) => [s.lat, s.lon]);
-}
-
-function analyse(itinerary) {
-  const legs = itinerary.legs.map((leg) => {
-    const coords = legCoords(leg);
-    const transit = Boolean(leg.tripId);
-    const metres = transit ? zonesAlong(coords) : new Map();
-    return { leg, coords, transit, metres, zones: zoneList(metres) };
-  });
-  const total = new Map();
-  for (const l of legs) for (const [id, m] of l.metres) total.set(id, (total.get(id) ?? 0) + m);
-  return { itinerary, legs, zones: zoneList(total) };
-}
-
-function zoneList(metres) {
-  return [...metres].map(([id, m]) => ({ id, border: m < BORDER_M }));
-}
-
-function lineColor(leg) {
-  const name = (leg.displayName || leg.routeShortName || '').toUpperCase();
-  return LINE_COLORS[leg.mode]?.[name] ?? MODE_COLORS[leg.mode] ?? '#b41730';
-}
-
-function lineBadge(leg) {
-  const bg = lineColor(leg);
-  return el('span', { className: 'line', style: `background:${bg};color:${DARK_TEXT.has(bg) ? '#222' : '#fff'}` },
-    leg.displayName || leg.routeShortName || leg.mode);
-}
-
-function zoneChip({ id, border }) {
+function zoneChip(id) {
   const z = zoneById.get(id);
-  const title = border
-    ? `${z.name}: the route only touches this zone (< ${BORDER_M} m), e.g. a border station like Hellerup (2/30)`
-    : z.name;
-  return el('span', { className: border ? 'zone border' : 'zone', title }, z.short);
+  return el('span', { className: 'zone', title: z?.name ?? '' }, z?.short ?? id);
 }
 
 const ZONE_PREVIEW = 3; // chips kept at each end of a collapsed zone list
 
-/** Zone chips, optionally joined by arrows; long lists collapse to "first … +N … last" and toggle on click. */
-function zoneSequence(list, arrows) {
-  const join = (chips) => (arrows ? chips.flatMap((c, i) => (i ? [' → ', c] : [c])) : chips);
-  if (list.length <= ZONE_PREVIEW * 2 + 2) return join(list.map(zoneChip));
+/** Zone chips; long lists collapse to "first … +N … last" and toggle on click. */
+function zoneSequence(ids) {
+  if (ids.length <= ZONE_PREVIEW * 2 + 2) return ids.map(zoneChip);
   const seq = el('span', { className: 'zone-seq' });
   const toggleButton = (label, title, expand) => {
     const b = el('button', { type: 'button', className: 'zone more', title }, label);
@@ -398,72 +423,75 @@ function zoneSequence(list, arrows) {
     return b;
   };
   const render = (expanded) => seq.replaceChildren(...(expanded
-    ? [...join(list.map(zoneChip)), ' ', toggleButton('less', 'Collapse zones', false)]
-    : join([
-      ...list.slice(0, ZONE_PREVIEW).map(zoneChip),
-      toggleButton(`+${list.length - ZONE_PREVIEW * 2}`, 'Show all zones', true),
-      ...list.slice(-ZONE_PREVIEW).map(zoneChip),
-    ])));
+    ? [...ids.map(zoneChip), ' ', toggleButton('less', 'Collapse zones', false)]
+    : [
+      ...ids.slice(0, ZONE_PREVIEW).map(zoneChip),
+      toggleButton(`+${ids.length - ZONE_PREVIEW * 2}`, 'Show all zones', true),
+      ...ids.slice(-ZONE_PREVIEW).map(zoneChip),
+    ]));
   render(false);
   return [seq];
 }
 
-function formatDuration(seconds) {
-  const m = Math.round(seconds / 60);
+function zoneRowContent(trip) {
+  if (trip.zones === null) return ['Zones: loading…'];
+  if (!trip.zones.length) return ['Zones: not available'];
+  return [trip.zones.length === 1 ? '1 zone:' : `${trip.zones.length} zones:`, ...zoneSequence(trip.zones)];
+}
+
+function formatDuration(m) {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
 function renderTrips(trips) {
   const list = document.getElementById('results');
-  const items = trips.map((trip, index) => {
-    const { itinerary: it, legs, zones: tripZones } = trip;
-    const transitLegs = legs.filter((l) => l.transit);
-    const changes = it.transfers === 1 ? '1 change' : `${it.transfers} changes`;
+  list.replaceChildren(...trips.map((trip, index) => {
+    const transitLegs = trip.legs.filter((l) => l.transit);
+    const changes = trip.changes === 1 ? '1 change' : `${trip.changes} changes`;
 
     const lines = el('div', { className: 'lines' });
     transitLegs.forEach((l, i) => {
       if (i) lines.append('›');
-      lines.append(lineBadge(l.leg));
+      lines.append(lineBadge(l.line));
     });
     if (!transitLegs.length) lines.append('Walk only');
 
-    const counted = tripZones.filter((z) => !z.border);
-    const touched = tripZones.filter((z) => z.border);
-    const zoneRow = el('div', { className: 'zones' },
-      counted.length === 1 ? '1 zone:' : `${counted.length} zones:`, ...zoneSequence(counted, false));
-    if (touched.length) zoneRow.append(' · border:', ...zoneSequence(touched, false));
+    trip.zoneRow = el('div', { className: 'zones' }, ...zoneRowContent(trip));
 
     const legList = el('ul', { className: 'legs' }, ...transitLegs.map((l) => el('li', {},
-      lineBadge(l.leg), ` ${l.leg.from.name} → ${l.leg.to.name}`,
-      el('div', { className: 'stops' },
-        `${timeFmt.format(new Date(l.leg.startTime))}–${timeFmt.format(new Date(l.leg.endTime))} · zones `,
-        ...zoneSequence(l.zones, true)))));
+      lineBadge(l.line), ` ${l.from.name} → ${l.to.name}`,
+      el('div', { className: 'stops' }, `${hafasClock(l.dep)}–${hafasClock(l.arr)}`))));
 
     const li = el('li', { className: 'trip' },
       el('div', { className: 'trip-head' },
-        el('span', {}, `${timeFmt.format(new Date(it.startTime))} – ${timeFmt.format(new Date(it.endTime))}`),
-        el('span', {}, `${formatDuration(it.duration)} · ${changes}`)),
-      lines, zoneRow, legList);
-    li.addEventListener('click', () => selectTrip(trips, index));
+        el('span', {}, `${hafasClock(trip.dep)} – ${hafasClock(trip.arr)}`),
+        el('span', {}, `${formatDuration(trip.minutes)} · ${changes}`)),
+      lines, trip.zoneRow, legList);
+    li.addEventListener('click', () => selectTrip(index));
     return li;
-  });
-  list.replaceChildren(...items);
+  }));
 }
 
-function selectTrip(trips, index) {
+function setTripZones(trip, zoneIds) {
+  trip.zones = zoneIds;
+  trip.zoneRow.replaceChildren(...zoneRowContent(trip));
+  if (shownTrips[selectedIndex] === trip) highlightZones(zoneIds);
+}
+
+function selectTrip(index) {
+  selectedIndex = index;
   [...document.getElementById('results').children].forEach((li, i) => li.classList.toggle('selected', i === index));
-  const trip = trips[index];
+  const trip = shownTrips[index];
   routeLayer.clearLayers();
   const bounds = L.latLngBounds([]);
   for (const l of trip.legs) {
-    if (!l.coords.length) continue;
     bounds.extend(l.coords);
     if (l.transit) {
       L.polyline(l.coords, { color: '#fff', weight: 9, opacity: 0.9 }).addTo(routeLayer);
-      L.polyline(l.coords, { color: lineColor(l.leg), weight: 5 })
-        .bindTooltip(`${l.leg.displayName || l.leg.mode}: ${l.leg.from.name} → ${l.leg.to.name}`, { sticky: true })
+      L.polyline(l.coords, { color: l.line.bg, weight: 5 })
+        .bindTooltip(`${l.line.title}: ${l.from.name} → ${l.to.name}`, { sticky: true })
         .addTo(routeLayer);
-      for (const stop of [l.leg.from, l.leg.to]) {
+      for (const stop of [l.from, l.to]) {
         L.circleMarker([stop.lat, stop.lon], { radius: 5, color: '#222', weight: 2, fillColor: '#fff', fillOpacity: 1 })
           .bindTooltip(stop.name).addTo(routeLayer);
       }
@@ -471,7 +499,7 @@ function selectTrip(trips, index) {
       L.polyline(l.coords, { color: '#555', weight: 4, dashArray: '2 8', lineCap: 'round' }).addTo(routeLayer);
     }
   }
-  highlightZones(trip.zones.filter((z) => !z.border).map((z) => z.id));
+  highlightZones(trip.zones ?? []);
   if (bounds.isValid()) {
     const panel = document.getElementById('panel');
     const wide = window.innerWidth > 760;
@@ -482,24 +510,34 @@ function selectTrip(trips, index) {
 
 document.getElementById('search').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const mine = ++searchSeq;
   const go = document.getElementById('go');
   go.disabled = true;
   document.getElementById('results').replaceChildren();
+  shownTrips = [];
+  selectedIndex = -1;
   routeLayer.clearLayers();
   highlightZones([]);
   showStatus('Searching…');
   try {
     const [from, to] = await Promise.all([fromField.resolve('start'), toField.resolve('destination')]);
-    const [plan] = await Promise.all([planTrips(from, to), zonesReady]);
-    const trips = (plan.itineraries || []).map(analyse);
+    const [trips] = await Promise.all([searchTrips(from, to), zonesReady]);
+    if (mine !== searchSeq) return;
     if (!trips.length) throw new Error('No public transport routes found.');
     showStatus('');
+    shownTrips = trips;
     renderTrips(trips);
-    selectTrip(trips, 0);
+    selectTrip(0);
+    // Parallel single requests: ~0.4 s in total, versus ~1.8 s for one batched request.
+    for (const trip of trips) {
+      fetchTripZones(trip.ctxRecon)
+        .catch(() => [])
+        .then((ids) => { if (mine === searchSeq) setTripZones(trip, ids); });
+    }
   } catch (err) {
-    showStatus(err.message, true);
+    if (mine === searchSeq) showStatus(err.message, true);
   } finally {
-    go.disabled = false;
+    if (mine === searchSeq) go.disabled = false;
   }
 });
 
