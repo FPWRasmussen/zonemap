@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ZoneMap – which DSB zones does my trip cross?</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="panel">
+    <form id="search" autocomplete="off">
+      <div class="field">
+        <span class="pin from" aria-hidden="true"></span>
+        <input id="from" name="from" placeholder="From" title="Address, stop or place" aria-label="From">
+        <ul class="suggest" role="listbox"></ul>
+      </div>
+      <button type="button" id="swap" title="Swap start and end" aria-label="Swap start and end">⇅</button>
+      <div class="field">
+        <span class="pin to" aria-hidden="true"></span>
+        <input id="to" name="to" placeholder="To" title="Address, stop or place" aria-label="To">
+        <ul class="suggest" role="listbox"></ul>
+      </div>
+      <button type="submit" id="go">Find routes</button>
+    </form>
+    <div id="status" role="status"></div>
+    <ol id="results"></ol>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>
