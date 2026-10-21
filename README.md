@@ -9,6 +9,9 @@ Enter a start and destination; the app lists up to 6 routes, each with the zones
 The selected route is drawn on the map and its zones are highlighted.
 Click a zone to highlight it; click it again, or anywhere outside the zones, to clear it.
 
+On phones, expand **Show routes & details** to browse alternatives, or use **Edit journey** to change the search.
+Small route dots mark intermediate stops returned by the planner; tap a dot for its station name.
+
 ## How it works
 
 It's a static site with no build step and no backend.

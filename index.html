@@ -12,6 +12,10 @@
   <div id="map"></div>
 
   <div id="panel">
+    <div id="journey-bar" hidden>
+      <div id="journey-name"></div>
+      <button type="button" id="edit-journey" aria-expanded="false" aria-controls="search">Edit journey</button>
+    </div>
     <form id="search" autocomplete="off">
       <div class="field">
         <span class="pin from" aria-hidden="true"></span>
@@ -27,7 +31,13 @@
       <button type="submit" id="go">Find routes</button>
     </form>
     <div id="status" role="status"></div>
-    <ol id="results"></ol>
+    <section id="route-sheet" aria-label="Journey routes" hidden>
+      <div id="sheet-header">
+        <div id="route-summary" aria-live="polite"></div>
+        <button type="button" id="toggle-routes" aria-expanded="false" aria-controls="results">Show routes &amp; details</button>
+      </div>
+      <ol id="results"></ol>
+    </section>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"

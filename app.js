@@ -171,7 +171,7 @@ async function searchTrips(from, to) {
         { type: 'PROD', mode: 'INC', value: 4095 },
       ],
       getPolyline: true,
-      getPasslist: false,
+      getPasslist: true,
       numF: NUM_TRIPS,
     });
   } catch (err) {
@@ -222,10 +222,25 @@ function parseTrip(con, common) {
     const transit = Boolean(sec.jny);
     const polyXL = transit ? sec.jny.polyG?.polyXL : sec.gis?.polyG?.polyXL;
     const coords = (polyXL ?? []).flatMap((i) => (polys[i]?.crdEncYX ? decodePolyline(polys[i].crdEncYX) : []));
+    const passlist = transit ? sec.jny.stopL ?? [] : [];
+    const depIndex = passlist.findIndex((stop) => stop.idx === sec.dep.idx && stop.locX === sec.dep.locX);
+    const arrIndex = passlist.findIndex((stop) => stop.idx === sec.arr.idx && stop.locX === sec.arr.locX);
+    // stopL can cover the whole service; idx is a stop identifier, not an array offset.
+    const riddenStops = depIndex >= 0 && arrIndex >= depIndex
+      ? passlist.slice(depIndex + 1, arrIndex)
+      : passlist.filter((stop) => (
+        (sec.dep.idx == null || stop.idx == null || stop.idx > sec.dep.idx)
+        && (sec.arr.idx == null || stop.idx == null || stop.idx < sec.arr.idx)
+      ));
+    const stops = riddenStops
+      .filter((stop) => stop.locX !== sec.dep.locX && stop.locX !== sec.arr.locX)
+      .filter((stop) => Number.isFinite(locs[stop.locX]?.crd?.x) && Number.isFinite(locs[stop.locX]?.crd?.y))
+      .map((stop) => point(stop.locX));
     return {
       transit,
       from,
       to,
+      stops,
       dep: sec.dep.dTimeS, // scheduled; real-time values exist only for some stops, and mixing them misleads
       arr: sec.arr.aTimeS,
       line: transit ? lineInfo(prods[sec.jny.prodX], icons) : null,
@@ -393,11 +408,131 @@ document.getElementById('swap').addEventListener('click', () => {
   if (!a) document.getElementById('to').value = aText;
 });
 
+/** Draw stations last so every dot stays above all route polylines. */
+function drawRouteStops(legs) {
+  const endpoints = new Map();
+  const intermediate = new Map();
+  const key = (stop) => `${stop.lat},${stop.lon}`;
+  for (const leg of legs) {
+    if (!leg.transit) continue;
+    for (const stop of [leg.from, leg.to]) endpoints.set(key(stop), stop);
+    for (const stop of leg.stops ?? []) intermediate.set(key(stop), stop);
+  }
+  const draw = (stop, radius) => {
+    // Leaflet treats tooltip strings as HTML; a text-only element keeps station names safe.
+    const label = document.createElement('span');
+    label.textContent = stop.name;
+    L.circleMarker([stop.lat, stop.lon], {
+      radius, color: '#222', weight: radius === 5 ? 2 : 1.5, fillColor: '#fff', fillOpacity: 1,
+    }).bindTooltip(label, { direction: 'top', offset: [0, -radius] })
+      .on('click', function () { this.openTooltip(); })
+      .addTo(routeLayer);
+  };
+  for (const [id, stop] of intermediate) {
+    if (!endpoints.has(id)) draw(stop, 3);
+  }
+  for (const stop of endpoints.values()) draw(stop, 5);
+}
+
 // ---------- results ----------
 
 let shownTrips = [];
 let selectedIndex = -1;
 let searchSeq = 0;
+let routeBounds = null;
+let sheetExpanded = false;
+let editingJourney = true;
+let fitFrame = 0;
+let lastFitKey = '';
+const phoneLayout = window.matchMedia('(max-width: 760px)');
+const searchForm = document.getElementById('search');
+const resultsList = document.getElementById('results');
+const routeSheet = document.getElementById('route-sheet');
+const journeyBar = document.getElementById('journey-bar');
+const routesToggle = document.getElementById('toggle-routes');
+const editJourney = document.getElementById('edit-journey');
+
+function syncJourneyLayout() {
+  const phone = phoneLayout.matches;
+  const hasTrips = shownTrips.length > 0;
+  const compactSearch = phone && hasTrips && !editingJourney;
+  searchForm.hidden = compactSearch;
+  journeyBar.hidden = !compactSearch;
+  editJourney.setAttribute('aria-expanded', String(!compactSearch));
+  routeSheet.hidden = !hasTrips;
+  resultsList.hidden = phone && !sheetExpanded;
+  routesToggle.setAttribute('aria-expanded', String(sheetExpanded));
+  routesToggle.textContent = sheetExpanded ? 'Hide routes & details' : `Show ${shownTrips.length} routes & details`;
+  if (resultsList.hidden && resultsList.contains(document.activeElement)) routesToggle.focus();
+  if (compactSearch && searchForm.contains(document.activeElement)) document.activeElement.blur();
+  scheduleRouteFit();
+}
+
+function setSheetExpanded(expanded) {
+  sheetExpanded = expanded;
+  syncJourneyLayout();
+  if (expanded) {
+    const selected = resultsList.children[selectedIndex];
+    if (selected) {
+      resultsList.scrollTop += selected.getBoundingClientRect().top - resultsList.getBoundingClientRect().top;
+    }
+  }
+}
+
+function renderSelectedSummary() {
+  const trip = shownTrips[selectedIndex];
+  const summary = document.getElementById('route-summary');
+  if (!trip) { summary.replaceChildren(); return; }
+  const lines = el('div', { className: 'lines' });
+  for (const leg of trip.legs) {
+    if (leg.transit) lines.append(lineBadge(leg.line));
+  }
+  if (!lines.childNodes.length) lines.append('Walk only');
+  const zoneText = trip.zones === null ? 'Zones loading…'
+    : !trip.zones.length ? 'Zones unavailable'
+    : `${trip.zones.length} ${trip.zones.length === 1 ? 'zone' : 'zones'}: ${trip.zones.map((id) => zoneById.get(id)?.short ?? id).join(', ')}`;
+  lines.append(el('span', { className: 'summary-zones', title: zoneText }, zoneText));
+  summary.replaceChildren(
+    el('div', { className: 'trip-head' },
+      el('span', {}, `${hafasClock(trip.dep)} – ${hafasClock(trip.arr)}`),
+      el('span', {}, formatDuration(trip.minutes))),
+    lines);
+}
+
+/** Refit the existing route, not its layers, when the space around the map changes. */
+function scheduleRouteFit() {
+  if (fitFrame) return;
+  fitFrame = requestAnimationFrame(() => {
+    fitFrame = 0;
+    document.documentElement.style.setProperty('--route-sheet-height',
+      `${phoneLayout.matches && !routeSheet.hidden ? routeSheet.getBoundingClientRect().height : 0}px`);
+    if (!routeBounds?.isValid()) return;
+    const mapRect = document.getElementById('map').getBoundingClientRect();
+    const visibleRect = (node) => node.hidden || !node.getClientRects().length ? null : node.getBoundingClientRect();
+    const topRects = [searchForm, journeyBar, document.getElementById('status')].map(visibleRect).filter(Boolean);
+    const top = Math.max(0, ...topRects.map((rect) => rect.bottom - mapRect.top)) + 16;
+    const sheetRect = visibleRect(routeSheet);
+    const left = !phoneLayout.matches && sheetRect ? sheetRect.right - mapRect.left + 20 : 20;
+    const bottom = phoneLayout.matches && sheetRect ? mapRect.bottom - sheetRect.top + 16 : 30;
+    const key = [mapRect.width, mapRect.height, top, left, bottom].join(',');
+    if (key === lastFitKey) return;
+    lastFitKey = key;
+    map.invalidateSize({ pan: false });
+    map.fitBounds(routeBounds, { paddingTopLeft: [left, top], paddingBottomRight: [20, bottom], maxZoom: 15, animate: false });
+  });
+}
+
+routesToggle.addEventListener('click', () => setSheetExpanded(!sheetExpanded));
+editJourney.addEventListener('click', () => {
+  editingJourney = true;
+  setSheetExpanded(false);
+  document.getElementById('from').focus();
+});
+phoneLayout.addEventListener('change', syncJourneyLayout);
+window.addEventListener('resize', scheduleRouteFit);
+const journeyLayoutObserver = new ResizeObserver(scheduleRouteFit);
+[searchForm, journeyBar, routeSheet, document.getElementById('status')].forEach((node) => journeyLayoutObserver.observe(node));
+syncJourneyLayout();
 
 function lineBadge(line) {
   return el('span', { className: 'line', title: line.title, style: `background:${line.bg};color:${line.fg}` }, line.label);
@@ -458,14 +593,16 @@ function renderTrips(trips) {
 
     trip.zoneRow = el('div', { className: 'zones' }, ...zoneRowContent(trip));
 
-    const legList = el('ul', { className: 'legs' }, ...transitLegs.map((l) => el('li', {},
-      lineBadge(l.line), ` ${l.from.name} → ${l.to.name}`,
+    const legList = el('ul', { className: 'legs' }, ...trip.legs.map((l) => el('li', {},
+      l.transit ? lineBadge(l.line) : 'Walk', ` ${l.from.name} → ${l.to.name}`,
       el('div', { className: 'stops' }, `${hafasClock(l.dep)}–${hafasClock(l.arr)}`))));
 
-    const li = el('li', { className: 'trip' },
+    const selectButton = el('button', { type: 'button', className: 'trip-select' },
       el('div', { className: 'trip-head' },
         el('span', {}, `${hafasClock(trip.dep)} – ${hafasClock(trip.arr)}`),
-        el('span', {}, `${formatDuration(trip.minutes)} · ${changes}`)),
+        el('span', {}, `${formatDuration(trip.minutes)} · ${changes}`)));
+    selectButton.setAttribute('aria-pressed', 'false');
+    const li = el('li', { className: 'trip' }, selectButton,
       lines, trip.zoneRow, legList);
     li.addEventListener('click', () => selectTrip(index));
     return li;
@@ -475,12 +612,19 @@ function renderTrips(trips) {
 function setTripZones(trip, zoneIds) {
   trip.zones = zoneIds;
   trip.zoneRow.replaceChildren(...zoneRowContent(trip));
-  if (shownTrips[selectedIndex] === trip) highlightZones(zoneIds);
+  if (shownTrips[selectedIndex] === trip) {
+    highlightZones(zoneIds);
+    renderSelectedSummary();
+  }
 }
 
 function selectTrip(index) {
+  if (index === selectedIndex) return;
   selectedIndex = index;
-  [...document.getElementById('results').children].forEach((li, i) => li.classList.toggle('selected', i === index));
+  [...resultsList.children].forEach((li, i) => {
+    li.classList.toggle('selected', i === index);
+    li.querySelector('.trip-select').setAttribute('aria-pressed', String(i === index));
+  });
   const trip = shownTrips[index];
   routeLayer.clearLayers();
   const bounds = L.latLngBounds([]);
@@ -491,21 +635,17 @@ function selectTrip(index) {
       L.polyline(l.coords, { color: l.line.bg, weight: 5 })
         .bindTooltip(`${l.line.title}: ${l.from.name} → ${l.to.name}`, { sticky: true })
         .addTo(routeLayer);
-      for (const stop of [l.from, l.to]) {
-        L.circleMarker([stop.lat, stop.lon], { radius: 5, color: '#222', weight: 2, fillColor: '#fff', fillOpacity: 1 })
-          .bindTooltip(stop.name).addTo(routeLayer);
-      }
     } else {
       L.polyline(l.coords, { color: '#555', weight: 4, dashArray: '2 8', lineCap: 'round' }).addTo(routeLayer);
     }
   }
+  drawRouteStops(trip.legs);
+  routeBounds = bounds;
+  lastFitKey = '';
+  renderSelectedSummary();
   highlightZones(trip.zones ?? []);
-  if (bounds.isValid()) {
-    const panel = document.getElementById('panel');
-    const wide = window.innerWidth > 760;
-    const top = wide ? document.getElementById('search').offsetHeight + 30 : panel.offsetHeight + 20;
-    map.fitBounds(bounds, { paddingTopLeft: [wide ? 450 : 20, top], paddingBottomRight: [40, 30], maxZoom: 15 });
-  }
+  if (phoneLayout.matches) setSheetExpanded(false);
+  else syncJourneyLayout();
 }
 
 document.getElementById('search').addEventListener('submit', async (e) => {
@@ -516,6 +656,12 @@ document.getElementById('search').addEventListener('submit', async (e) => {
   document.getElementById('results').replaceChildren();
   shownTrips = [];
   selectedIndex = -1;
+  routeBounds = null;
+  lastFitKey = '';
+  sheetExpanded = false;
+  editingJourney = true;
+  renderSelectedSummary();
+  syncJourneyLayout();
   routeLayer.clearLayers();
   highlightZones([]);
   showStatus('Searching…');
@@ -527,6 +673,10 @@ document.getElementById('search').addEventListener('submit', async (e) => {
     showStatus('');
     shownTrips = trips;
     renderTrips(trips);
+    editingJourney = false;
+    document.getElementById('journey-name').replaceChildren(
+      el('span', { title: from.name }, from.name),
+      el('span', { title: to.name }, `→ ${to.name}`));
     selectTrip(0);
     // Parallel single requests: ~0.4 s in total, versus ~1.8 s for one batched request.
     for (const trip of trips) {

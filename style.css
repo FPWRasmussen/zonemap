@@ -13,6 +13,8 @@
 }
 
 html, body { margin: 0; height: 100%; }
+[hidden] { display: none !important; }
+button:focus-visible { outline: 3px solid var(--zone-hit-dark); outline-offset: 2px; }
 #map { position: fixed; inset: 0; }
 #map.leaflet-container { background: #f3f4f5; }
 
@@ -88,6 +90,9 @@ html, body { margin: 0; height: 100%; }
   border: 1px solid var(--border);
   border-radius: 7px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, .15);
+  max-height: min(280px, 35dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 10;
 }
 .suggest:empty { display: none; }
@@ -106,6 +111,10 @@ html, body { margin: 0; height: 100%; }
 }
 #status.error { color: var(--accent); }
 
+#route-sheet { display: flex; flex-direction: column; min-height: 0; width: 420px; max-width: 100%; }
+#sheet-header { display: none; }
+#journey-bar { display: none; }
+.trip-select { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 #results {
   list-style: none;
   margin: 0;
@@ -113,6 +122,8 @@ html, body { margin: 0; height: 100%; }
   width: 420px;
   max-width: 100%;
   overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -175,9 +186,66 @@ html, body { margin: 0; height: 100%; }
 .zone-label.hit span { background: var(--zone-hit-dark); border-color: var(--zone-hit-dark); color: #fff; font-size: 16px; }
 
 @media (max-width: 760px) {
-  #search { flex-wrap: wrap; }
+  .leaflet-bottom { bottom: var(--route-sheet-height, 0px); }
+  .leaflet-touch .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
+  #panel {
+    top: calc(8px + env(safe-area-inset-top));
+    left: calc(8px + env(safe-area-inset-left));
+    right: calc(8px + env(safe-area-inset-right));
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+  #search { flex-wrap: wrap; width: 100%; }
   .field { flex: 1 1 calc(100% - 52px); }
   .field:nth-of-type(2) { flex-basis: 100%; }
+  .field input { min-height: 44px; font-size: 16px; }
+  #search button, #journey-bar button, #toggle-routes, .trip-select, .zone.more { min-height: 44px; }
   #go { flex: 1 1 100%; }
-  #results { width: 100%; max-height: 45vh; }
+  .suggest li { min-height: 44px; box-sizing: border-box; }
+  #journey-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px 6px 12px;
+    background: var(--surface);
+    border-radius: 10px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, .18);
+  }
+  #journey-name { flex: 1; min-width: 0; font-size: 13px; }
+  #journey-name span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #journey-bar button, #toggle-routes {
+    border: 0;
+    border-radius: 7px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    background: #eef1f3;
+    color: var(--fg);
+  }
+  #journey-bar button { flex: none; }
+  #route-sheet {
+    position: fixed;
+    bottom: 0;
+    left: env(safe-area-inset-left);
+    right: env(safe-area-inset-right);
+    width: auto;
+    max-width: none;
+    box-sizing: border-box;
+    max-height: 45vh;
+    max-height: 45dvh;
+    padding: 10px 10px calc(8px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -2px 14px rgba(0, 0, 0, .18);
+  }
+  #sheet-header { display: flex; flex-direction: column; flex: none; gap: 4px; }
+  #route-summary .trip-head { font-size: 14px; }
+  #route-summary .lines { flex-wrap: nowrap; overflow: hidden; margin: 4px 0; font-size: 13px; white-space: nowrap; }
+  #route-summary .line { flex: none; }
+  .summary-zones { margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
+  #toggle-routes { width: 100%; color: var(--accent); background: #f6f7f8; }
+  #results { width: 100%; padding: 6px 0 0; flex: 1 1 auto; }
+  .trip { box-shadow: none; border-color: var(--border); padding: 6px 10px; }
+  .trip-head { flex-wrap: wrap; gap: 2px 8px; }
 }
