@@ -28,13 +28,16 @@
         <input id="to" name="to" placeholder="To" title="Address, stop or place" aria-label="To">
         <ul class="suggest" role="listbox"></ul>
       </div>
-      <button type="submit" id="go">Find routes</button>
+      <button type="submit" id="go" aria-live="polite">Find routes</button>
     </form>
     <div id="status" role="status"></div>
     <section id="route-sheet" aria-label="Journey routes" hidden>
       <div id="sheet-header">
+        <button type="button" id="toggle-routes" aria-expanded="false" aria-controls="results">
+          <span class="drawer-grip" aria-hidden="true"></span>
+          <span class="drawer-label">Routes &amp; details</span>
+        </button>
         <div id="route-summary" aria-live="polite"></div>
-        <button type="button" id="toggle-routes" aria-expanded="false" aria-controls="results">Show routes &amp; details</button>
       </div>
       <ol id="results"></ol>
     </section>

@@ -441,6 +441,8 @@ let selectedIndex = -1;
 let searchSeq = 0;
 let routeBounds = null;
 let sheetExpanded = false;
+let drawerDrag = null;
+let suppressDrawerClick = false;
 let editingJourney = true;
 let fitFrame = 0;
 let lastFitKey = '';
@@ -462,7 +464,9 @@ function syncJourneyLayout() {
   routeSheet.hidden = !hasTrips;
   resultsList.hidden = phone && !sheetExpanded;
   routesToggle.setAttribute('aria-expanded', String(sheetExpanded));
-  routesToggle.textContent = sheetExpanded ? 'Hide routes & details' : `Show ${shownTrips.length} routes & details`;
+  routesToggle.querySelector('.drawer-label').textContent = `${shownTrips.length} routes · details`;
+  routesToggle.setAttribute('aria-label', `${sheetExpanded ? 'Collapse' : 'Expand'} ${shownTrips.length} routes and journey details`);
+  routesToggle.title = sheetExpanded ? 'Pull down or tap to collapse' : 'Pull up or tap to expand';
   if (resultsList.hidden && resultsList.contains(document.activeElement)) routesToggle.focus();
   if (compactSearch && searchForm.contains(document.activeElement)) document.activeElement.blur();
   scheduleRouteFit();
@@ -503,6 +507,7 @@ function scheduleRouteFit() {
     fitFrame = 0;
     document.documentElement.style.setProperty('--route-sheet-height',
       `${phoneLayout.matches && !routeSheet.hidden ? routeSheet.getBoundingClientRect().height : 0}px`);
+    if (drawerDrag?.moved) return;
     if (!routeBounds?.isValid()) return;
     const mapRect = document.getElementById('map').getBoundingClientRect();
     const visibleRect = (node) => node.hidden || !node.getClientRects().length ? null : node.getBoundingClientRect();
@@ -519,13 +524,80 @@ function scheduleRouteFit() {
   });
 }
 
-routesToggle.addEventListener('click', () => setSheetExpanded(!sheetExpanded));
+routesToggle.addEventListener('click', (e) => {
+  if (suppressDrawerClick && e.detail > 0) { suppressDrawerClick = false; return; }
+  suppressDrawerClick = false;
+  setSheetExpanded(!sheetExpanded);
+});
+
+routesToggle.addEventListener('pointerdown', (e) => {
+  if (!phoneLayout.matches || !shownTrips.length || !e.isPrimary || e.button !== 0) return;
+  suppressDrawerClick = false;
+  const style = getComputedStyle(routeSheet);
+  const collapsedHeight = document.getElementById('sheet-header').offsetHeight
+    + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const maxHeight = Math.max(collapsedHeight, parseFloat(style.maxHeight));
+  const height = routeSheet.getBoundingClientRect().height;
+  drawerDrag = {
+    pointerId: e.pointerId, startY: e.clientY, startHeight: height,
+    collapsedHeight, maxHeight, height, wasExpanded: sheetExpanded, moved: false,
+  };
+  routesToggle.setPointerCapture(e.pointerId);
+});
+
+routesToggle.addEventListener('pointermove', (e) => {
+  if (!drawerDrag || drawerDrag.pointerId !== e.pointerId) return;
+  const delta = drawerDrag.startY - e.clientY;
+  if (!drawerDrag.moved && Math.abs(delta) < 5) return;
+  drawerDrag.moved = true;
+  drawerDrag.height = Math.max(drawerDrag.collapsedHeight,
+    Math.min(drawerDrag.maxHeight, drawerDrag.startHeight + delta));
+  resultsList.hidden = false;
+  routeSheet.style.height = `${drawerDrag.height}px`;
+});
+
+function finishDrawerDrag(cancelled = false) {
+  if (!drawerDrag) return;
+  const drag = drawerDrag;
+  drawerDrag = null;
+  routeSheet.style.removeProperty('height');
+  if (routesToggle.hasPointerCapture(drag.pointerId)) routesToggle.releasePointerCapture(drag.pointerId);
+  suppressDrawerClick = drag.moved;
+  const pull = drag.height - drag.startHeight;
+  const expanded = cancelled || Math.abs(pull) < 40 ? drag.wasExpanded : pull > 0;
+  setSheetExpanded(expanded);
+}
+
+routesToggle.addEventListener('pointerup', (e) => {
+  if (drawerDrag?.pointerId === e.pointerId) finishDrawerDrag();
+});
+routesToggle.addEventListener('pointercancel', (e) => {
+  if (drawerDrag?.pointerId === e.pointerId) finishDrawerDrag(true);
+});
+routesToggle.addEventListener('lostpointercapture', (e) => {
+  if (drawerDrag?.pointerId === e.pointerId) finishDrawerDrag(true);
+});
+routesToggle.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  e.preventDefault();
+  setSheetExpanded(e.key === 'ArrowUp');
+});
+routeSheet.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sheetExpanded) {
+    e.preventDefault();
+    setSheetExpanded(false);
+    routesToggle.focus();
+  }
+});
 editJourney.addEventListener('click', () => {
   editingJourney = true;
   setSheetExpanded(false);
   document.getElementById('from').focus();
 });
-phoneLayout.addEventListener('change', syncJourneyLayout);
+phoneLayout.addEventListener('change', () => {
+  finishDrawerDrag(true);
+  syncJourneyLayout();
+});
 window.addEventListener('resize', scheduleRouteFit);
 const journeyLayoutObserver = new ResizeObserver(scheduleRouteFit);
 [searchForm, journeyBar, routeSheet, document.getElementById('status')].forEach((node) => journeyLayoutObserver.observe(node));
@@ -651,6 +723,8 @@ document.getElementById('search').addEventListener('submit', async (e) => {
   const mine = ++searchSeq;
   const go = document.getElementById('go');
   go.disabled = true;
+  go.textContent = 'Searching…';
+  go.setAttribute('aria-busy', 'true');
   document.getElementById('results').replaceChildren();
   shownTrips = [];
   selectedIndex = -1;
@@ -662,7 +736,7 @@ document.getElementById('search').addEventListener('submit', async (e) => {
   syncJourneyLayout();
   routeLayer.clearLayers();
   highlightZones([]);
-  showStatus('Searching…');
+  showStatus('');
   try {
     const [from, to] = await Promise.all([fromField.resolve('start'), toField.resolve('destination')]);
     const [trips] = await Promise.all([searchTrips(from, to), zonesReady]);
@@ -685,7 +759,11 @@ document.getElementById('search').addEventListener('submit', async (e) => {
   } catch (err) {
     if (mine === searchSeq) showStatus(err.message, true);
   } finally {
-    if (mine === searchSeq) go.disabled = false;
+    if (mine === searchSeq) {
+      go.disabled = false;
+      go.textContent = 'Find routes';
+      go.removeAttribute('aria-busy');
+    }
   }
 });
 
