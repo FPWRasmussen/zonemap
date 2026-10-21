@@ -500,13 +500,15 @@ function renderSelectedSummary() {
     lines, zones);
 }
 
-/** Refit the existing route, not its layers, when the space around the map changes. */
+/** Fit routes around the compact controls; opening the drawer only overlays the map. */
 function scheduleRouteFit() {
   if (fitFrame) return;
   fitFrame = requestAnimationFrame(() => {
     fitFrame = 0;
-    document.documentElement.style.setProperty('--route-sheet-height',
-      `${phoneLayout.matches && !routeSheet.hidden ? routeSheet.getBoundingClientRect().height : 0}px`);
+    const sheetStyle = phoneLayout.matches && !routeSheet.hidden ? getComputedStyle(routeSheet) : null;
+    const compactSheetHeight = sheetStyle ? document.getElementById('sheet-header').offsetHeight
+      + parseFloat(sheetStyle.paddingTop) + parseFloat(sheetStyle.paddingBottom) : 0;
+    document.documentElement.style.setProperty('--route-sheet-height', `${compactSheetHeight}px`);
     if (drawerDrag?.moved) return;
     if (!routeBounds?.isValid()) return;
     const mapRect = document.getElementById('map').getBoundingClientRect();
@@ -515,7 +517,7 @@ function scheduleRouteFit() {
     const top = Math.max(0, ...topRects.map((rect) => rect.bottom - mapRect.top)) + 16;
     const sheetRect = visibleRect(routeSheet);
     const left = !phoneLayout.matches && sheetRect ? sheetRect.right - mapRect.left + 20 : 20;
-    const bottom = phoneLayout.matches && sheetRect ? mapRect.bottom - sheetRect.top + 16 : 30;
+    const bottom = sheetStyle ? compactSheetHeight + 16 : 30;
     const key = [mapRect.width, mapRect.height, top, left, bottom].join(',');
     if (key === lastFitKey) return;
     lastFitKey = key;
