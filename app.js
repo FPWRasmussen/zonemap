@@ -488,15 +488,12 @@ function renderSelectedSummary() {
     if (leg.transit) lines.append(lineBadge(leg.line));
   }
   if (!lines.childNodes.length) lines.append('Walk only');
-  const zoneText = trip.zones === null ? 'Zones loading…'
-    : !trip.zones.length ? 'Zones unavailable'
-    : `${trip.zones.length} ${trip.zones.length === 1 ? 'zone' : 'zones'}: ${trip.zones.map((id) => zoneById.get(id)?.short ?? id).join(', ')}`;
-  lines.append(el('span', { className: 'summary-zones', title: zoneText }, zoneText));
+  const zones = el('div', { className: 'zones' }, ...zoneRowContent(trip, false));
   summary.replaceChildren(
     el('div', { className: 'trip-head' },
       el('span', {}, `${hafasClock(trip.dep)} – ${hafasClock(trip.arr)}`),
       el('span', {}, formatDuration(trip.minutes))),
-    lines);
+    lines, zones);
 }
 
 /** Refit the existing route, not its layers, when the space around the map changes. */
@@ -546,10 +543,11 @@ function zoneChip(id) {
 const ZONE_PREVIEW = 3; // chips kept at each end of a collapsed zone list
 
 /** Zone chips; long lists collapse to "first … +N … last" and toggle on click. */
-function zoneSequence(ids) {
+function zoneSequence(ids, expandable = true) {
   if (ids.length <= ZONE_PREVIEW * 2 + 2) return ids.map(zoneChip);
   const seq = el('span', { className: 'zone-seq' });
   const toggleButton = (label, title, expand) => {
+    if (!expandable) return el('span', { className: 'zone', title: `${ids.length - ZONE_PREVIEW * 2} more zones` }, label);
     const b = el('button', { type: 'button', className: 'zone more', title }, label);
     b.addEventListener('click', (e) => {
       e.stopPropagation(); // don't (re)select the trip card
@@ -568,10 +566,10 @@ function zoneSequence(ids) {
   return [seq];
 }
 
-function zoneRowContent(trip) {
+function zoneRowContent(trip, expandable = true) {
   if (trip.zones === null) return ['Zones: loading…'];
   if (!trip.zones.length) return ['Zones: not available'];
-  return [trip.zones.length === 1 ? '1 zone:' : `${trip.zones.length} zones:`, ...zoneSequence(trip.zones)];
+  return [trip.zones.length === 1 ? '1 zone:' : `${trip.zones.length} zones:`, ...zoneSequence(trip.zones, expandable)];
 }
 
 function formatDuration(m) {

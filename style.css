@@ -241,9 +241,8 @@ button:focus-visible { outline: 3px solid var(--zone-hit-dark); outline-offset: 
   }
   #sheet-header { display: flex; flex-direction: column; flex: none; gap: 4px; }
   #route-summary .trip-head { font-size: 14px; }
-  #route-summary .lines { flex-wrap: nowrap; overflow: hidden; margin: 4px 0; font-size: 13px; white-space: nowrap; }
+  #route-summary .lines { margin: 4px 0; font-size: 13px; }
   #route-summary .line { flex: none; }
-  .summary-zones { margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
   #toggle-routes { width: 100%; color: var(--accent); background: #f6f7f8; }
   #results { width: 100%; padding: 6px 0 0; flex: 1 1 auto; }
   .trip { box-shadow: none; border-color: var(--border); padding: 6px 10px; }
