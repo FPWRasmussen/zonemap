@@ -462,20 +462,24 @@ function syncJourneyLayout() {
   journeyBar.hidden = !compactSearch;
   editJourney.setAttribute('aria-expanded', String(!compactSearch));
   routeSheet.hidden = !hasTrips;
-  resultsList.hidden = phone && !sheetExpanded;
+  routeSheet.classList.toggle('expanded', phone && sheetExpanded);
+  resultsList.hidden = false;
+  resultsList.inert = phone && !sheetExpanded;
+  resultsList.setAttribute('aria-hidden', String(resultsList.inert));
   routesToggle.setAttribute('aria-expanded', String(sheetExpanded));
   routesToggle.querySelector('.drawer-label').textContent = `${shownTrips.length} routes · details`;
   routesToggle.setAttribute('aria-label', `${sheetExpanded ? 'Collapse' : 'Expand'} ${shownTrips.length} routes and journey details`);
   routesToggle.title = sheetExpanded ? 'Pull down or tap to collapse' : 'Pull up or tap to expand';
-  if (resultsList.hidden && resultsList.contains(document.activeElement)) routesToggle.focus();
+  if (resultsList.inert && resultsList.contains(document.activeElement)) routesToggle.focus();
   if (compactSearch && searchForm.contains(document.activeElement)) document.activeElement.blur();
   scheduleRouteFit();
 }
 
 function setSheetExpanded(expanded) {
+  const opening = expanded && !sheetExpanded;
   sheetExpanded = expanded;
   syncJourneyLayout();
-  if (expanded) {
+  if (opening) {
     const selected = resultsList.children[selectedIndex];
     if (selected) {
       resultsList.scrollTop += selected.getBoundingClientRect().top - resultsList.getBoundingClientRect().top;
@@ -539,11 +543,13 @@ routesToggle.addEventListener('pointerdown', (e) => {
   const collapsedHeight = document.getElementById('sheet-header').offsetHeight
     + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
   const maxHeight = Math.max(collapsedHeight, parseFloat(style.maxHeight));
-  const height = routeSheet.getBoundingClientRect().height;
+  const height = Math.max(collapsedHeight, Math.min(maxHeight, window.innerHeight - routeSheet.getBoundingClientRect().top));
   drawerDrag = {
     pointerId: e.pointerId, startY: e.clientY, startHeight: height,
     collapsedHeight, maxHeight, height, wasExpanded: sheetExpanded, moved: false,
   };
+  routeSheet.style.setProperty('--drawer-drag-offset', `${maxHeight - height}px`);
+  routeSheet.classList.add('dragging');
   routesToggle.setPointerCapture(e.pointerId);
 });
 
@@ -554,15 +560,15 @@ routesToggle.addEventListener('pointermove', (e) => {
   drawerDrag.moved = true;
   drawerDrag.height = Math.max(drawerDrag.collapsedHeight,
     Math.min(drawerDrag.maxHeight, drawerDrag.startHeight + delta));
-  resultsList.hidden = false;
-  routeSheet.style.height = `${drawerDrag.height}px`;
+  routeSheet.style.setProperty('--drawer-drag-offset', `${drawerDrag.maxHeight - drawerDrag.height}px`);
 });
 
 function finishDrawerDrag(cancelled = false) {
   if (!drawerDrag) return;
   const drag = drawerDrag;
   drawerDrag = null;
-  routeSheet.style.removeProperty('height');
+  routeSheet.classList.remove('dragging');
+  routeSheet.style.removeProperty('--drawer-drag-offset');
   if (routesToggle.hasPointerCapture(drag.pointerId)) routesToggle.releasePointerCapture(drag.pointerId);
   suppressDrawerClick = drag.moved;
   const pull = drag.height - drag.startHeight;
@@ -602,7 +608,8 @@ phoneLayout.addEventListener('change', () => {
 });
 window.addEventListener('resize', scheduleRouteFit);
 const journeyLayoutObserver = new ResizeObserver(scheduleRouteFit);
-[searchForm, journeyBar, routeSheet, document.getElementById('status')].forEach((node) => journeyLayoutObserver.observe(node));
+[searchForm, journeyBar, routeSheet, document.getElementById('sheet-header'), document.getElementById('status')]
+  .forEach((node) => journeyLayoutObserver.observe(node));
 syncJourneyLayout();
 
 function lineBadge(line) {
@@ -716,8 +723,7 @@ function selectTrip(index) {
   lastFitKey = '';
   renderSelectedSummary();
   highlightZones(trip.zones ?? []);
-  if (phoneLayout.matches) setSheetExpanded(false);
-  else syncJourneyLayout();
+  syncJourneyLayout();
 }
 
 document.getElementById('search').addEventListener('submit', async (e) => {

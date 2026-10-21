@@ -10,7 +10,7 @@ The selected route is drawn on the map and its zones are highlighted.
 Click a zone to highlight it; click it again, or anywhere outside the zones, to clear it.
 
 On phones, pull the bottom drawer up (or tap its handle) to browse routes and details; use **Edit journey** to change the search.
-The drawer overlays the map without changing its position or zoom.
+The drawer overlays the map without changing its position or zoom. Selecting another route keeps the drawer open.
 Long zone lists show the first and last three zones in both the bottom summary and route cards.
 Small route dots mark intermediate stops returned by the planner; tap a dot for its station name.
 

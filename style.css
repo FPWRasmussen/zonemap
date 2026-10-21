@@ -150,6 +150,7 @@ button:focus-visible { outline: 3px solid var(--zone-hit-dark); outline-offset: 
   box-shadow: 0 2px 10px rgba(0, 0, 0, .15);
   cursor: pointer;
   border: 2px solid transparent;
+  transition: border-color 120ms ease;
 }
 .trip.selected { border-color: var(--accent); }
 .trip-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
@@ -246,13 +247,20 @@ button:focus-visible { outline: 3px solid var(--zone-hit-dark); outline-offset: 
     width: auto;
     max-width: none;
     box-sizing: border-box;
+    height: 65vh;
+    height: 65dvh;
     max-height: 65vh;
     max-height: 65dvh;
     padding: 10px 10px calc(8px + env(safe-area-inset-bottom));
     background: var(--surface);
     border-radius: 16px 16px 0 0;
     box-shadow: 0 -2px 14px rgba(0, 0, 0, .18);
+    overflow: hidden;
+    transform: translateY(calc(100% - var(--route-sheet-height, 0px)));
+    transition: transform 180ms cubic-bezier(.2, .7, .2, 1);
   }
+  #route-sheet.expanded { transform: translateY(0); }
+  #route-sheet.dragging { transform: translateY(var(--drawer-drag-offset, 0px)); transition: none; }
   #sheet-header { display: flex; flex-direction: column; flex: none; gap: 4px; }
   #route-summary .trip-head { font-size: 14px; }
   #route-summary .lines { margin: 4px 0; font-size: 13px; }
@@ -278,4 +286,8 @@ button:focus-visible { outline: 3px solid var(--zone-hit-dark); outline-offset: 
   #results { width: 100%; padding: 0; margin-top: 8px; flex: 1 1 auto; }
   .trip { box-shadow: none; border-color: var(--border); padding: 6px 10px; }
   .trip-head { flex-wrap: wrap; gap: 2px 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #route-sheet, .trip { transition: none; }
 }
